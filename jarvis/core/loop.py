@@ -40,7 +40,10 @@ class JarvisLoop:
 
         # Audio subsystems
         self.vad = VoiceActivityDetector(energy_threshold=config.get("audio.energy_threshold", 300.0))
-        self.wake_detector = WakeWordDetector(wake_word=config.wake_word, sensitivity=config.get("system.sensitivity", 0.5))
+        self.wake_detector = WakeWordDetector(
+            wake_word=config.wake_word,
+            sensitivity=config.get("system.sensitivity", 0.5),
+        )
         self.stt = SpeechToText(
             model_size=config.whisper_model,
             device=config.whisper_device,
@@ -72,10 +75,10 @@ class JarvisLoop:
 
     def start(self) -> None:
         self._running = True
-        logger.info(f"JARVIS initialized (TextMode={self.text_mode}, DryRun={self.dry_run}).")
+        logger.info(f"JARVIS started (TextMode={self.text_mode}, DryRun={self.dry_run}).")
 
         # Initial startup greeting
-        greeting = f"All systems operational, {config.address_as}. Standing by."
+        greeting = f"All systems operational, {config.address_as}. Ready for your command."
         print(f"\n[JARVIS]: {greeting}\n")
         if not self.text_mode:
             self.tts.speak(greeting, dry_run=self.dry_run)
@@ -86,78 +89,116 @@ class JarvisLoop:
             self._run_voice_loop()
 
     def _run_text_mode(self) -> None:
-        """Interactive terminal text mode."""
-        print(f"JARVIS Interactive Text Mode. Type your command, or 'exit'/'quit' to stop.\n")
+        """Interactive terminal text mode that loops indefinitely until exit."""
+        print(f"JARVIS Interactive Text Mode. Type commands, or 'exit'/'quit' to stop.\n")
         while self._running:
             try:
                 user_input = input(f"{config.user_name} > ").strip()
                 if not user_input:
                     continue
-                if user_input.lower() in ["exit", "quit", "shutdown"]:
-                    print(f"Powering down. Have a good day, {config.address_as}.")
+                if user_input.lower() in ["exit", "quit", "shutdown", "q"]:
+                    print(f"[JARVIS]: Powering down. Have a pleasant day, {config.address_as}.")
                     break
 
                 self.handle_user_utterance(user_input)
             except (KeyboardInterrupt, EOFError):
+                print(f"\n[JARVIS]: Session ended.")
                 break
+            except Exception as e:
+                logger.error(f"Error handling input: {e}", exc_info=True)
+                print(f"[JARVIS]: An error occurred, {config.address_as}: {e}")
+
         self.stop()
 
     def _run_voice_loop(self) -> None:
-        """Main microphone and acoustic listening loop."""
+        """Continuous, real-time voice loop with VAD, wake word detection, and follow-up window."""
         self.mic.start()
         audio_buffer = bytearray()
         silent_chunks = 0
-        is_recording_speech = False
+        is_recording = False
+        min_speech_bytes = 3200  # At least ~100ms of audio
+
+        mode_str = "Continuous Speech & 'Jarvis' Wake Word" if config.continuous_listening else "'Jarvis' Wake Word"
+        print(f"\n[JARVIS VOICE ENGINE ONLINE]")
+        print(f"Listening Mode: {mode_str}")
+        print(f"Speak into your microphone at any time...\n")
 
         try:
             while self._running:
-                chunk = self.mic.read_chunk(timeout=0.1)
+                chunk = self.mic.read_chunk(timeout=0.08)
                 if not chunk:
                     continue
 
                 curr_state = self.state_machine.current_state
 
-                # If speaking, check barge-in
+                # 1. If currently speaking, monitor for barge-in
                 if curr_state == JarvisState.SPEAKING:
                     self.barge_in.process_audio_chunk(chunk)
                     continue
 
-                # In IDLE state, monitor for wake word
-                if curr_state == JarvisState.IDLE:
-                    if self.wake_detector.process_frame(chunk):
-                        logger.info("Wake word spotted via acoustic frame!")
-                        self.state_machine.transition_to(JarvisState.LISTENING, "wake word detected")
-                        self.tts.speak(f"Yes, {config.address_as}?", dry_run=self.dry_run)
-                        audio_buffer.clear()
-                        is_recording_speech = True
-                        silent_chunks = 0
-                    continue
+                is_voice = self.vad.is_speech(chunk)
 
-                # In LISTENING state (either after wake word, follow-up window, or confirmation)
-                if curr_state in [JarvisState.LISTENING, JarvisState.WAITING_CONFIRMATION]:
-                    is_voice = self.vad.is_speech(chunk)
-                    if is_voice:
-                        is_recording_speech = True
-                        audio_buffer.extend(chunk)
+                if is_voice:
+                    if not is_recording:
+                        is_recording = True
+                        audio_buffer.clear()
                         silent_chunks = 0
-                    elif is_recording_speech:
-                        audio_buffer.extend(chunk)
-                        silent_chunks += 1
-                        # 1.2s of silence indicates end of utterance
-                        if silent_chunks > 12:
-                            is_recording_speech = False
-                            # Transcribe utterance
-                            utterance = self.stt.transcribe(bytes(audio_buffer)).strip()
-                            audio_buffer.clear()
-                            silent_chunks = 0
-                            if utterance:
-                                self.handle_user_utterance(utterance)
+                        print("\r[🎤 Hearing speech...]", end="", flush=True)
+                    audio_buffer.extend(chunk)
+                    silent_chunks = 0
+                elif is_recording:
+                    audio_buffer.extend(chunk)
+                    silent_chunks += 1
+                    # ~0.8s of silence after speech indicates user finished speaking
+                    if silent_chunks > 9:
+                        is_recording = False
+                        recorded_data = bytes(audio_buffer)
+                        audio_buffer.clear()
+                        silent_chunks = 0
+
+                        if len(recorded_data) >= min_speech_bytes:
+                            print("\r[⚡ Transcribing speech...]", end="", flush=True)
+                            transcription = self.stt.transcribe(recorded_data).strip()
+                            if transcription:
+                                print(f"\r{' ' * 30}\r", end="", flush=True)
+                                self._process_voice_transcription(transcription, curr_state)
+                            else:
+                                print(f"\r{' ' * 30}\r", end="", flush=True)
         finally:
             self.mic.stop()
 
+    def _process_voice_transcription(self, transcription: str, curr_state: JarvisState) -> None:
+        """Route transcribed voice utterance based on wake word, continuous mode, and state."""
+        is_wake, command = self.wake_detector.check_text_for_wake_word(transcription)
+
+        should_process = False
+        clean_utterance = transcription
+
+        # Case 1: Wake word explicitly detected
+        if is_wake:
+            should_process = True
+            clean_utterance = command if command else "hello"
+        # Case 2: In follow-up window or active listening state
+        elif curr_state in [JarvisState.LISTENING, JarvisState.WAITING_CONFIRMATION]:
+            should_process = True
+            clean_utterance = transcription
+        # Case 3: Continuous listening enabled
+        elif config.continuous_listening:
+            should_process = True
+            clean_utterance = transcription
+
+        if should_process:
+            print(f"\n{config.user_name} (Voice) > {transcription}")
+            self.handle_user_utterance(clean_utterance)
+        else:
+            logger.debug(f"Audio ignored (no wake word in IDLE): '{transcription}'")
+
     def handle_user_utterance(self, utterance: str) -> None:
         """Process transcribed speech or text input through safety and brain."""
-        logger.info(f"User utterance received: '{utterance}'")
+        if not utterance or not utterance.strip():
+            return
+
+        logger.info(f"Processing command: '{utterance}'")
         self.context.add_user_message(utterance)
 
         # 1. Check if we are waiting for voice confirmation

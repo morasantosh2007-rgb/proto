@@ -10,11 +10,12 @@ logger = logging.getLogger("jarvis.audio.vad")
 class VoiceActivityDetector:
     """Detects presence of human voice in audio frames using energy + zero-crossing or Silero."""
 
-    def __init__(self, sample_rate: int = 16000, energy_threshold: float = 300.0):
+    def __init__(self, sample_rate: int = 16000, energy_threshold: float = 300.0, use_silero: bool = False):
         self.sample_rate = sample_rate
         self.energy_threshold = energy_threshold
         self._silero_model = None
-        self._init_silero()
+        if use_silero:
+            self._init_silero()
 
     def _init_silero(self) -> None:
         try:

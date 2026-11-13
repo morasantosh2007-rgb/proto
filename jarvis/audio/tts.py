@@ -1,21 +1,24 @@
-"""Text-To-Speech (TTS) module with streaming speech, multi-engine support, and barge-in."""
+"""High-fidelity Text-To-Speech (TTS) module with sounddevice in-memory playback and barge-in."""
 
 import asyncio
+import io
 import logging
 import os
 import re
 import subprocess
-import tempfile
 import threading
-from typing import Optional, List
-from jarvis.core.state import JarvisState, EventType, JarvisEvent
+import time
+from typing import List, Optional
+import numpy as np
+
+from jarvis.core.state import EventType, JarvisEvent
 from jarvis.core.event_bus import bus
 
 logger = logging.getLogger("jarvis.audio.tts")
 
 
 class TextToSpeech:
-    """Multi-engine streaming TTS supporting Edge-TTS, Windows SAPI, and gTTS."""
+    """Multi-engine streaming TTS with in-memory decoding and instant barge-in."""
 
     def __init__(
         self,
@@ -41,9 +44,15 @@ class TextToSpeech:
             return self._is_speaking
 
     def interrupt(self) -> None:
-        """Immediately halts any current speech output (barge-in)."""
-        logger.info("TTS interrupt triggered.")
+        """Immediately halts any active audio playback (barge-in)."""
+        logger.info("TTS interrupt invoked.")
         self._interrupt_event.set()
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
+
         with self._lock:
             if self._speaking_process and self._speaking_process.poll() is None:
                 try:
@@ -54,7 +63,7 @@ class TextToSpeech:
             self._is_speaking = False
 
     def speak(self, text: str, dry_run: bool = False) -> None:
-        """Synchronously speak text, splitting by sentences for streaming output."""
+        """Speak text aloud, splitting sentences for natural conversational cadence."""
         if not text or not text.strip():
             return
 
@@ -72,7 +81,7 @@ class TextToSpeech:
             sentences = self._split_sentences(text)
             for sentence in sentences:
                 if self._interrupt_event.is_set():
-                    logger.info("TTS aborted mid-stream due to interrupt.")
+                    logger.info("TTS playback aborted mid-speech.")
                     break
                 self._speak_sentence(sentence)
         finally:
@@ -81,7 +90,7 @@ class TextToSpeech:
             bus.publish(JarvisEvent(EventType.SPEAK_ENDED, {"text": text}))
 
     def _split_sentences(self, text: str) -> List[str]:
-        # Split by punctuation while keeping natural conversational cadence
+        # Split by punctuation while keeping natural pauses
         parts = re.split(r'(?<=[.!?]) +', text.strip())
         return [p.strip() for p in parts if p.strip()]
 
@@ -89,34 +98,85 @@ class TextToSpeech:
         if self._interrupt_event.is_set():
             return
 
-        # Attempt primary engine first, then fall back to Windows SAPI
-        spoken = False
+        # Attempt 1: Edge-TTS
         if self.engine == "edge-tts":
             try:
-                spoken = self._speak_with_edge_tts(sentence)
+                if self._synth_and_play_edge(sentence):
+                    return
             except Exception as e:
-                logger.debug(f"Edge-TTS failed ({e}), falling back to Windows SAPI.")
+                logger.debug(f"Edge-TTS failed ({e}), falling back to gTTS.")
 
-        if not spoken:
-            try:
-                spoken = self._speak_with_sapi(sentence)
-            except Exception as e:
-                logger.error(f"Windows SAPI failed ({e}), falling back to gTTS.")
+        # Attempt 2: gTTS (Google Neural Voice) with in-memory playback
+        try:
+            if self._synth_and_play_gtts(sentence):
+                return
+        except Exception as e:
+            logger.debug(f"gTTS failed ({e}), falling back to Windows SAPI.")
 
-        if not spoken:
-            try:
-                self._speak_with_gtts(sentence)
-            except Exception as e:
-                logger.error(f"All TTS engines failed for sentence: '{sentence}': {e}")
+        # Attempt 3: Windows SAPI (System.Speech - 100% offline native)
+        try:
+            self._speak_with_sapi(sentence)
+        except Exception as e:
+            logger.error(f"All speech synthesizers failed for '{sentence}': {e}")
 
-    def _speak_with_edge_tts(self, sentence: str) -> bool:
-        """Synthesize with Edge-TTS and play."""
+    def _play_audio_bytes(self, audio_bytes: bytes) -> bool:
+        """Decode audio stream (MP3/WAV) in memory via PyAV and play through sounddevice."""
+        if self._interrupt_event.is_set() or not audio_bytes:
+            return False
+
+        try:
+            import av
+            import sounddevice as sd
+
+            buf = io.BytesIO(audio_bytes)
+            container = av.open(buf)
+            frames = []
+            for frame in container.decode(audio=0):
+                frames.append(frame.to_ndarray())
+
+            if not frames:
+                return False
+
+            audio_data = np.concatenate(frames, axis=1)
+            sr = container.streams.audio[0].rate
+
+            # Audio data shape formatting
+            if audio_data.ndim == 2:
+                # Transpose from (channels, samples) to (samples, channels)
+                audio_data = audio_data.T
+
+            # Normalize to float32
+            if audio_data.dtype == np.int16:
+                audio_float = audio_data.astype(np.float32) / 32768.0
+            elif audio_data.dtype == np.int32:
+                audio_float = audio_data.astype(np.float32) / 2147483648.0
+            else:
+                audio_float = audio_data.astype(np.float32)
+
+            duration = len(audio_float) / sr
+            sd.play(audio_float, sr)
+
+            # Wait while checking for interruption
+            start_t = time.time()
+            while time.time() - start_t < duration:
+                if self._interrupt_event.is_set():
+                    sd.stop()
+                    return False
+                time.sleep(0.05)
+
+            sd.stop()
+            return True
+        except Exception as e:
+            logger.error(f"Audio memory playback error: {e}")
+            return False
+
+    def _synth_and_play_edge(self, sentence: str) -> bool:
+        """Synthesize using Edge-TTS into memory buffer."""
         import edge_tts
-        temp_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-        temp_path = temp_file.name
-        temp_file.close()
 
-        async def _synth():
+        audio_chunks = []
+
+        async def _run_stream():
             communicate = edge_tts.Communicate(
                 sentence,
                 self.voice,
@@ -124,83 +184,62 @@ class TextToSpeech:
                 volume=self.volume,
                 pitch=self.pitch,
             )
-            await communicate.save(temp_path)
+            async for chunk in communicate.stream():
+                if self._interrupt_event.is_set():
+                    break
+                if chunk["type"] == "audio":
+                    audio_chunks.append(chunk["data"])
 
         try:
-            asyncio.run(_synth())
-            self._play_audio_file(temp_path)
-            return True
-        finally:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
+            asyncio.run(_run_stream())
+            if audio_chunks:
+                full_bytes = b"".join(audio_chunks)
+                return self._play_audio_bytes(full_bytes)
+        except Exception as e:
+            logger.debug(f"Edge-TTS stream error: {e}")
+        return False
+
+    def _synth_and_play_gtts(self, sentence: str) -> bool:
+        """Synthesize using gTTS into memory buffer and play."""
+        from gtts import gTTS
+        try:
+            tts = gTTS(text=sentence, lang="en", tld="co.uk")
+            buf = io.BytesIO()
+            tts.write_to_fp(buf)
+            buf.seek(0)
+            return self._play_audio_bytes(buf.read())
+        except Exception as e:
+            logger.debug(f"gTTS error: {e}")
+            return False
 
     def _speak_with_sapi(self, sentence: str) -> bool:
-        """Use Windows native System.Speech via PowerShell (instant & offline)."""
+        """Offline speech fallback using Windows native System.Speech."""
         if self._interrupt_event.is_set():
             return False
 
         clean_text = sentence.replace("'", "''").replace('"', '`"')
-        # PowerShell command calling .NET SpeechSynthesizer
         ps_cmd = (
-            f"Add-Type -AssemblyName System.Speech; "
+            f"[System.Reflection.Assembly]::LoadWithPartialName('System.Speech') | Out-Null; "
             f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
             f"$s.Speak('{clean_text}')"
         )
-        self._speaking_process = subprocess.Popen(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        while self._speaking_process.poll() is None:
-            if self._interrupt_event.is_set():
-                self._speaking_process.terminate()
-                return False
-            self._interrupt_event.wait(0.05)
-
-        return self._speaking_process.returncode == 0
-
-    def _speak_with_gtts(self, sentence: str) -> bool:
-        """Synthesize using Google TTS and play."""
-        from gtts import gTTS
-        temp_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-        temp_path = temp_file.name
-        temp_file.close()
-
         try:
-            tts = gTTS(text=sentence, lang="en", tld="co.uk")
-            tts.save(temp_path)
-            self._play_audio_file(temp_path)
+            self._speaking_process = subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            # Wait with strict timeout so it never hangs
+            start_t = time.time()
+            max_duration = max(5.0, len(sentence) * 0.15)
+            while self._speaking_process.poll() is None:
+                if self._interrupt_event.is_set() or (time.time() - start_t > max_duration):
+                    self._speaking_process.terminate()
+                    break
+                time.sleep(0.05)
+
             return True
-        finally:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-
-    def _play_audio_file(self, file_path: str) -> None:
-        """Play audio file with barge-in support."""
-        if self._interrupt_event.is_set():
-            return
-
-        # Use Windows Media Player or PowerShell to play mp3
-        ps_script = (
-            f"$wmp = New-Object -ComObject WMPlayer.OCX; "
-            f"$wmp.URL = '{file_path}'; "
-            f"$wmp.controls.play(); "
-            f"while ($wmp.playState -ne 1 -and $wmp.playState -ne 0) {{ Start-Sleep -Milliseconds 100 }}"
-        )
-        self._speaking_process = subprocess.Popen(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-        while self._speaking_process.poll() is None:
-            if self._interrupt_event.is_set():
-                self._speaking_process.terminate()
-                break
-            self._interrupt_event.wait(0.05)
+        except Exception as e:
+            logger.error(f"SAPI error: {e}")
+            return False

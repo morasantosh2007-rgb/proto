@@ -9,5 +9,6 @@ import jarvis.tools.calendar
 import jarvis.tools.news
 import jarvis.tools.weather
 import jarvis.tools.memory
+import jarvis.tools.knowledge
 
 __all__ = ["BaseTool", "ToolRegistry", "ToolResult"]

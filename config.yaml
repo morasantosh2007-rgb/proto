@@ -6,8 +6,9 @@ user:
 
 system:
   wake_word: "jarvis"
+  continuous_listening: true # Set to true for natural conversation; false for strict wake-word only
   sensitivity: 0.5
-  follow_up_window_seconds: 8.0
+  follow_up_window_seconds: 10.0
   barge_in: true
 
 audio:
@@ -17,8 +18,8 @@ audio:
   whisper_device: "cpu"        # "cpu" or "cuda"
   whisper_compute_type: "int8"
   sample_rate: 16000
-  vad_silence_threshold_ms: 1200
-  energy_threshold: 300
+  vad_silence_threshold_ms: 1000
+  energy_threshold: 150
 
   # Text-to-Speech (Free, high-fidelity neural streaming)
   tts_engine: "edge-tts"       # "edge-tts", "piper", "sapi", "gtts"

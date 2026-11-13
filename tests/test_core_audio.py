@@ -78,9 +78,16 @@ def test_vad_and_wake_word_helpers():
     assert bool(vad.is_speech(silence)) is False
 
     detector = WakeWordDetector(wake_word="jarvis")
-    assert detector.check_text_for_wake_word("Hey Jarvis what is the weather?") is True
-    assert detector.check_text_for_wake_word("Jarvis open chrome") is True
-    assert detector.check_text_for_wake_word("Good morning world") is False
+    is_wake1, cmd1 = detector.check_text_for_wake_word("Hey Jarvis what is the weather?")
+    assert is_wake1 is True
+    assert "what is the weather" in cmd1
+
+    is_wake2, cmd2 = detector.check_text_for_wake_word("Jarvis open chrome")
+    assert is_wake2 is True
+    assert "open chrome" in cmd2
+
+    is_wake3, _ = detector.check_text_for_wake_word("Good morning world")
+    assert is_wake3 is False
 
 
 def test_tts_dry_run():

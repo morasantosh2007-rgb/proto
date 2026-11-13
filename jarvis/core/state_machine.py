@@ -14,14 +14,14 @@ class StateMachine:
     """Manages system state transitions, conversational windows, and interruption states."""
 
     ALLOWED_TRANSITIONS = {
-        JarvisState.IDLE: [JarvisState.LISTENING, JarvisState.SHUTDOWN],
-        JarvisState.LISTENING: [JarvisState.THINKING, JarvisState.IDLE, JarvisState.INTERRUPTED],
-        JarvisState.THINKING: [JarvisState.ACTING, JarvisState.SPEAKING, JarvisState.WAITING_CONFIRMATION, JarvisState.IDLE],
-        JarvisState.ACTING: [JarvisState.THINKING, JarvisState.SPEAKING, JarvisState.IDLE],
-        JarvisState.SPEAKING: [JarvisState.LISTENING, JarvisState.IDLE, JarvisState.INTERRUPTED],
-        JarvisState.WAITING_CONFIRMATION: [JarvisState.ACTING, JarvisState.SPEAKING, JarvisState.IDLE],
-        JarvisState.INTERRUPTED: [JarvisState.LISTENING, JarvisState.IDLE],
-        JarvisState.SHUTDOWN: [],
+        JarvisState.IDLE: [JarvisState.LISTENING, JarvisState.THINKING, JarvisState.SPEAKING, JarvisState.ACTING, JarvisState.SHUTDOWN],
+        JarvisState.LISTENING: [JarvisState.THINKING, JarvisState.SPEAKING, JarvisState.IDLE, JarvisState.INTERRUPTED, JarvisState.SHUTDOWN],
+        JarvisState.THINKING: [JarvisState.ACTING, JarvisState.SPEAKING, JarvisState.WAITING_CONFIRMATION, JarvisState.IDLE, JarvisState.SHUTDOWN],
+        JarvisState.ACTING: [JarvisState.THINKING, JarvisState.SPEAKING, JarvisState.IDLE, JarvisState.SHUTDOWN],
+        JarvisState.SPEAKING: [JarvisState.LISTENING, JarvisState.IDLE, JarvisState.INTERRUPTED, JarvisState.SHUTDOWN],
+        JarvisState.WAITING_CONFIRMATION: [JarvisState.ACTING, JarvisState.SPEAKING, JarvisState.IDLE, JarvisState.SHUTDOWN],
+        JarvisState.INTERRUPTED: [JarvisState.LISTENING, JarvisState.IDLE, JarvisState.SHUTDOWN],
+        JarvisState.SHUTDOWN: [JarvisState.IDLE],
     }
 
     def __init__(self, follow_up_window_seconds: float = 8.0):

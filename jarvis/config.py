@@ -47,6 +47,10 @@ class JarvisConfig:
         return self.get("system.wake_word", "jarvis").lower()
 
     @property
+    def continuous_listening(self) -> bool:
+        return bool(self.get("system.continuous_listening", True))
+
+    @property
     def follow_up_window(self) -> float:
         return float(self.get("system.follow_up_window_seconds", 8.0))
 
