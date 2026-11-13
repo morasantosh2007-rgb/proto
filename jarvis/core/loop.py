@@ -238,19 +238,22 @@ class JarvisLoop:
                 self.state_machine.transition_to(JarvisState.ACTING, "user confirmed action")
                 reply = f"Authorization confirmed, {config.address_as}. Executing {pending.tool_name} now."
                 print(f"[JARVIS]: {reply}")
-                self.tts.speak(reply, dry_run=self.dry_run)
+                if not self.text_mode:
+                    self.tts.speak(reply, dry_run=self.dry_run)
 
                 # Execute confirmed action
                 results = self.router.execute_calls([{"name": pending.tool_name, "parameters": pending.parameters}])
                 exec_msg = results[0].message if results else "Action complete."
                 print(f"[JARVIS]: {exec_msg}")
-                self.tts.speak(exec_msg, dry_run=self.dry_run)
+                if not self.text_mode:
+                    self.tts.speak(exec_msg, dry_run=self.dry_run)
                 self.state_machine.on_speech_ended()
                 return
             elif not confirmed and not confirmation_engine.has_pending:
                 reply = f"Understood, {config.address_as}. Action cancelled."
                 print(f"[JARVIS]: {reply}")
-                self.tts.speak(reply, dry_run=self.dry_run)
+                if not self.text_mode:
+                    self.tts.speak(reply, dry_run=self.dry_run)
                 self.state_machine.on_speech_ended()
                 return
 
@@ -258,7 +261,8 @@ class JarvisLoop:
         if "connect my email" in utterance.lower() or "connect my calendar" in utterance.lower():
             reply = "Launching the integrations setup wizard, sir."
             print(f"[JARVIS]: {reply}")
-            self.tts.speak(reply, dry_run=self.dry_run)
+            if not self.text_mode:
+                self.tts.speak(reply, dry_run=self.dry_run)
             from jarvis.integrations.setup_wizard import run_setup_wizard
             run_setup_wizard()
             return
@@ -279,7 +283,8 @@ class JarvisLoop:
                 decision.confirmation_prompt,
             )
             print(f"[JARVIS]: {decision.confirmation_prompt}")
-            self.tts.speak(decision.confirmation_prompt, dry_run=self.dry_run)
+            if not self.text_mode:
+                self.tts.speak(decision.confirmation_prompt, dry_run=self.dry_run)
             return
 
         # 5. Execute tool calls if any
@@ -296,13 +301,21 @@ class JarvisLoop:
 
             print(f"[JARVIS]: {full_reply}")
             self.context.add_assistant_message(full_reply)
-            self.tts.speak(full_reply, dry_run=self.dry_run)
+            if self.text_mode:
+                if not self.dry_run and config.get("audio.speak_in_text_mode", False):
+                    threading.Thread(target=self.tts.speak, args=(full_reply, False), daemon=True).start()
+            else:
+                self.tts.speak(full_reply, dry_run=self.dry_run)
         else:
             # Conversational spoken response
             self.state_machine.transition_to(JarvisState.SPEAKING, "answering user")
             print(f"[JARVIS]: {decision.spoken_response}")
             self.context.add_assistant_message(decision.spoken_response)
-            self.tts.speak(decision.spoken_response, dry_run=self.dry_run)
+            if self.text_mode:
+                if not self.dry_run and config.get("audio.speak_in_text_mode", False):
+                    threading.Thread(target=self.tts.speak, args=(decision.spoken_response, False), daemon=True).start()
+            else:
+                self.tts.speak(decision.spoken_response, dry_run=self.dry_run)
 
         # Transition to follow-up listening window
         self.state_machine.on_speech_ended()

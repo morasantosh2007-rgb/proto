@@ -77,3 +77,26 @@ def test_hybrid_brain_fallback():
     assert decision is not None
     assert len(decision.spoken_response) > 0
     assert "sir" in decision.spoken_response
+
+
+def test_capabilities_and_creator_inquiries():
+    engine = LocalIntentEngine()
+
+    # User queries: "tell me what you can do?", "who created you?"
+    cap_decision = engine.match("tell me what you can do?")
+    assert cap_decision is not None
+    assert "personal AI chief of staff" in cap_decision.spoken_response
+    assert "sir" in cap_decision.spoken_response
+
+    creator_decision = engine.match("who created you?")
+    assert creator_decision is not None
+    assert "created by you" in creator_decision.spoken_response
+    assert "sir" in creator_decision.spoken_response
+
+    boss_decision = engine.match("who is your boss?")
+    assert boss_decision is not None
+    assert "exclusively for you" in boss_decision.spoken_response
+
+    nature_decision = engine.match("are you real?")
+    assert nature_decision is not None
+    assert "artificial intelligence" in nature_decision.spoken_response

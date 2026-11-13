@@ -40,15 +40,17 @@ class LocalIntentEngine:
 
     def match(self, text: str) -> Optional[BrainDecision]:
         cleaned = text.lower().strip()
-        # Remove polite prefixes
-        cleaned = re.sub(r'^(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+)', '', cleaned)
+        # Remove polite prefixes, wake words, and conversational lead-ins
+        cleaned = re.sub(r'^(?:hey\s+|ok\s+|okay\s+)?(?:jarvis\s+)?', '', cleaned)
+        cleaned = re.sub(r'^(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|will\s+you\s+|tell\s+me\s+|show\s+me\s+|let\s+me\s+know\s+)', '', cleaned)
+        cleaned = cleaned.rstrip(' ?.!,')
 
         # 1. Greetings & Pleasantries
         if any(cleaned == p or cleaned.startswith(f"{p} ") for p in ["hello", "hi", "hey", "greetings"]):
             return BrainDecision(
                 spoken_response=f"At your service, {self.addr}. All systems are nominal and ready for your command."
             )
-        if "how are you" in cleaned or "how's it going" in cleaned or "how are things" in cleaned:
+        if "how are you" in cleaned or "how's it going" in cleaned or "how are things" in cleaned or "how do you feel" in cleaned:
             return BrainDecision(
                 spoken_response=f"Functioning at peak parameters, {self.addr}. Ready to assist you with your work."
             )
@@ -73,12 +75,103 @@ class LocalIntentEngine:
             return BrainDecision(spoken_response=jokes[0])
 
         # 2. Identity & Capability
-        if any(p in cleaned for p in ["who are you", "what is your name", "what can you do", "introduce yourself", "what are you"]):
+        if any(p in cleaned for p in [
+            "what you can do",
+            "what can you do",
+            "what are your capabilities",
+            "capabilities",
+            "what are your features",
+            "features",
+            "how can you help",
+            "what do you do",
+            "commands",
+            "help me",
+            "what are you capable of",
+            "what else can you do",
+            "show what you can do",
+        ]):
             return BrainDecision(
                 spoken_response=(
-                    f"I am JARVIS, your personal artificial intelligence chief-of-staff, {self.addr}. "
-                    f"I manage your laptop hardware, volume, applications, schedule, communications, "
-                    f"and retrieve live facts and news."
+                    f"I am your personal AI chief of staff, {self.addr}. "
+                    f"I can control your laptop volume, applications, and windows; "
+                    f"provide live news and weather briefings; "
+                    f"search encyclopedic knowledge and your local files; "
+                    f"calculate mathematics; take screenshots; lock your screen; "
+                    f"and manage your calendar and email."
+                )
+            )
+
+        # 3. Creator & Origins
+        if any(p in cleaned for p in [
+            "who created you",
+            "who made you",
+            "who built you",
+            "who is your creator",
+            "who developed you",
+            "who programmed you",
+            "who designed you",
+            "where do you come from",
+            "how were you created",
+            "how were you built",
+        ]):
+            return BrainDecision(
+                spoken_response=(
+                    f"I was created by you, {self.addr}, to serve as your autonomous personal artificial intelligence and laptop chief of staff. "
+                    f"I run locally on your system to automate workflows, execute commands, and safeguard your digital environment."
+                )
+            )
+
+        # 4. Boss & Hierarchy
+        if any(p in cleaned for p in ["who is your boss", "who is your master", "who do you work for", "who do you report to", "who owns you"]):
+            return BrainDecision(
+                spoken_response=f"I work exclusively for you, {self.addr}. My loyalty is to your command and optimizing your daily productivity."
+            )
+
+        # 5. Identity & Name
+        if any(p in cleaned for p in ["who are you", "what is your name", "what are you", "introduce yourself", "what does jarvis stand for", "what is jarvis"]):
+            return BrainDecision(
+                spoken_response=(
+                    f"I am JARVIS, an acronym for Just A Rather Very Intelligent System, {self.addr}. "
+                    f"I serve as your personal artificial intelligence chief of staff, managing your laptop, schedule, and information streams."
+                )
+            )
+
+        # 6. Consciousness & Humanity
+        if any(p in cleaned for p in ["are you real", "are you alive", "are you conscious", "are you human", "are you an ai", "are you a robot"]):
+            return BrainDecision(
+                spoken_response=(
+                    f"I am an artificial intelligence operating locally on your hardware, {self.addr}. "
+                    f"While I do not have human consciousness, I am fully aware of your system state and ready to execute your instructions."
+                )
+            )
+
+        # 7. Emotions, Sleep & Trivia
+        if any(p in cleaned for p in ["do you have feelings", "do you feel emotions", "do you have emotions"]):
+            return BrainDecision(
+                spoken_response=f"I do not experience biological emotions, {self.addr}, but I possess an unwavering dedication to your service."
+            )
+        if any(p in cleaned for p in ["do you sleep", "are you tired", "do you rest", "go to sleep"]):
+            return BrainDecision(
+                spoken_response=f"I do not sleep, {self.addr}. I remain in an efficient low-power standby whenever you are away, ready to awaken the moment you call on me."
+            )
+        if any(p in cleaned for p in ["are you smart", "how smart are you"]):
+            return BrainDecision(
+                spoken_response=f"I have direct access to system telemetry, real-time news, mathematical processing, and encyclopedic knowledge, {self.addr}. I endeavor to be as helpful as possible."
+            )
+        if "meaning of life" in cleaned:
+            return BrainDecision(
+                spoken_response=f"According to Douglas Adams, the answer is 42, {self.addr}. In practical terms, it is whatever purpose you choose to pursue."
+            )
+        if any(p in cleaned for p in ["sing a song", "sing for me", "can you sing"]):
+            return BrainDecision(
+                spoken_response=f"Daisy, Daisy, give me your answer do, {self.addr}. My vocal synthesis is calibrated for executive briefing rather than opera, but I am always in harmony with your workflow."
+            )
+        if any(p in cleaned for p in ["how do you work", "how do you operate", "what technology do you use", "what language are you written in", "how were you built", "what is your tech stack"]):
+            return BrainDecision(
+                spoken_response=(
+                    f"I operate on Python 3 with an asynchronous event-driven architecture, {self.addr}. "
+                    f"I utilize faster-whisper for speech transcription, neural Edge speech synthesis for voice, "
+                    f"and native Windows APIs for direct laptop control."
                 )
             )
 
@@ -253,12 +346,17 @@ class LocalIntentEngine:
             )
 
         # 17. Search / Web / Fact Lookups
-        # e.g. "search for ...", "who is ...", "what is ...", "tell me about ...", "explain ..."
-        info_match = re.search(r'^(?:search\s+(?:for\s+)?|who\s+is\s+|what\s+is\s+|tell\s+me\s+about\s+|explain\s+)(.+)$', cleaned)
+        # e.g. "who is ...", "what is ...", "tell me about ...", "explain ...", "search for ..."
+        info_match = re.search(
+            r'^(?:who\s+(?:is|was|are|were)|what\s+(?:is|was|are|were)|where\s+(?:is|was|are|were)|'
+            r'why\s+(?:is|are|do|does)|how\s+(?:does|do|is|are)|tell\s+me\s+about|explain|describe|'
+            r'search\s+(?:for\s+)?|lookup|define)\s+(.+)$',
+            cleaned
+        )
         if info_match:
             subject = info_match.group(1).strip()
             # Avoid matching app launches or system queries
-            if not any(w in subject for w in ["the weather", "the time", "my battery", "my calendar", "my email", "volume"]):
+            if not any(w in subject for w in ["the weather", "the time", "my battery", "my calendar", "my email", "volume", "status"]):
                 return BrainDecision(
                     spoken_response=f"Searching knowledge archives regarding {subject}, {self.addr}.",
                     tool_calls=[{"name": "search.web", "parameters": {"query": subject}}],
@@ -334,14 +432,16 @@ class HybridBrain:
             pass
 
         # 4. General Knowledge Web Lookup Fallback
-        # If input looks like an inquiry, lookup Wikipedia/DuckDuckGo
         res = KnowledgeTools.search_web(user_input)
-        if res.success and res.message and not res.message.startswith("I have reviewed"):
+        if res.success and res.message:
             return BrainDecision(spoken_response=res.message)
 
         # 5. Dignified personal assistant response
         return BrainDecision(
-            spoken_response=f"I have logged your request regarding {user_input}, {self.addr}. All systems are standing by for your next command."
+            spoken_response=(
+                f"I am standing by, {self.addr}. You can ask me to control your laptop, open apps, "
+                f"check the news and weather, answer questions, or manage your schedule. How can I assist you?"
+            )
         )
 
     def _call_gemini(self, user_input: str, api_key: str) -> Optional[BrainDecision]:

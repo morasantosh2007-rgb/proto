@@ -39,15 +39,17 @@ class KnowledgeTools:
         clean_expr = expression.lower().replace("times", "*").replace("x", "*").replace("plus", "+").replace("minus", "-").replace("divided by", "/")
         clean_expr = re.sub(r'[^0-9\+\-\*\/\(\)\.\%\^\s]', '', clean_expr)
 
-        # Percentage handling e.g. 20% of 500
-        pct_match = re.search(r'(\d+(?:\.\d+)?)\s*%\s*(?:of\s*)?(\d+(?:\.\d+)?)', expression.lower())
+        # Percentage handling e.g. 20% of 500, 15 percent of 500
+        pct_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:%|percent(?:\s+of)?)\s+(\d+(?:\.\d+)?)', expression.lower())
+        if not pct_match:
+            pct_match = re.search(r'(\d+(?:\.\d+)?)\s*%\s*(?:of\s*)?(\d+(?:\.\d+)?)', expression.lower())
         if pct_match:
             pct = float(pct_match.group(1))
             val = float(pct_match.group(2))
             res = (pct / 100.0) * val
             return ToolResult(
                 success=True,
-                message=f"{pct} percent of {val} is {res:g}, {config.address_as}.",
+                message=f"{pct:g} percent of {val:g} is {res:g}, {config.address_as}.",
                 data={"result": res},
             )
 
@@ -84,50 +86,95 @@ class KnowledgeTools:
                 data={"query": query},
             )
 
-        clean_q = query.strip()
-        # 1. Try Wikipedia Summary API
-        wiki_title = urllib.parse.quote(clean_q.replace(" ", "_"))
-        wiki_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{wiki_title}"
-        req = urllib.request.Request(wiki_url, headers={"User-Agent": "JARVIS-Assistant/1.0"})
+        # Strip conversational prefixes to isolate the core subject
+        clean_q = re.sub(
+            r'^(?:can\s+you\s+|please\s+)?(?:who\s+(?:is|was|are|were)|what\s+(?:is|was|are|were)|where\s+(?:is|was|are|were)|'
+            r'tell\s+me\s+about|explain|search\s+(?:for\s+)?|define|how\s+does|how\s+do|why\s+(?:is|are|do|does))\s+',
+            '',
+            query,
+            flags=re.IGNORECASE,
+        ).strip(' ?.,!')
 
+        if not clean_q:
+            clean_q = query.strip(' ?.,!')
+
+        headers = {"User-Agent": "JARVIS-Assistant/1.0 (personal-assistant@jarvis.local)"}
+
+        # 1. Search Wikipedia for canonical article title via OpenSearch
+        canonical_title = None
         try:
-            with urllib.request.urlopen(req, timeout=3.5) as resp:
+            opensearch_url = (
+                f"https://en.wikipedia.org/w/api.php?action=opensearch&search={urllib.parse.quote(clean_q)}"
+                f"&limit=1&namespace=0&format=json"
+            )
+            req = urllib.request.Request(opensearch_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=4.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                extract = data.get("extract")
-                if extract:
-                    # Keep to 2 sentences for natural speech
-                    sentences = re.split(r'(?<=[.!?]) +', extract)
-                    summary = " ".join(sentences[:2])
-                    return ToolResult(
-                        success=True,
-                        message=f"{summary}",
-                        data={"source": "wikipedia", "extract": extract},
-                    )
-        except Exception:
-            pass
+                if len(data) > 1 and data[1]:
+                    canonical_title = data[1][0]
+        except Exception as e:
+            logger.debug(f"Wikipedia OpenSearch failed: {e}")
 
-        # 2. Try DuckDuckGo Instant Answer API
+        # 2. If OpenSearch missed, fallback to Wikipedia Query Search
+        if not canonical_title:
+            try:
+                qsearch_url = (
+                    f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(clean_q)}"
+                    f"&utf8=&format=json&srlimit=1"
+                )
+                req_q = urllib.request.Request(qsearch_url, headers=headers)
+                with urllib.request.urlopen(req_q, timeout=4.0) as resp_q:
+                    q_data = json.loads(resp_q.read().decode("utf-8"))
+                    results = q_data.get("query", {}).get("search", [])
+                    if results:
+                        canonical_title = results[0]["title"]
+            except Exception as e:
+                logger.debug(f"Wikipedia Query Search failed: {e}")
+
+        # 3. If canonical title found, fetch encyclopedic summary
+        if canonical_title:
+            try:
+                summary_url = (
+                    f"https://en.wikipedia.org/api/rest_v1/page/summary/"
+                    f"{urllib.parse.quote(canonical_title.replace(' ', '_'))}"
+                )
+                req_s = urllib.request.Request(summary_url, headers=headers)
+                with urllib.request.urlopen(req_s, timeout=4.0) as resp_s:
+                    s_data = json.loads(resp_s.read().decode("utf-8"))
+                    extract = s_data.get("extract", "")
+                    if extract:
+                        sentences = re.split(r'(?<=[.!?])\s+', extract)
+                        summary = " ".join(sentences[:2])
+                        return ToolResult(
+                            success=True,
+                            message=summary,
+                            data={"source": "wikipedia", "title": canonical_title, "summary": summary},
+                        )
+            except Exception as e:
+                logger.debug(f"Wikipedia summary fetch failed: {e}")
+
+        # 4. Fallback to DuckDuckGo Instant Answer API
         try:
             ddg_q = urllib.parse.quote(clean_q)
             ddg_url = f"https://api.duckduckgo.com/?q={ddg_q}&format=json"
-            req2 = urllib.request.Request(ddg_url, headers={"User-Agent": "JARVIS-Assistant/1.0"})
-            with urllib.request.urlopen(req2, timeout=3.5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                abstract = data.get("AbstractText")
+            req2 = urllib.request.Request(ddg_url, headers=headers)
+            with urllib.request.urlopen(req2, timeout=4.0) as resp2:
+                data2 = json.loads(resp2.read().decode("utf-8"))
+                abstract = data2.get("AbstractText")
                 if abstract:
-                    sentences = re.split(r'(?<=[.!?]) +', abstract)
+                    sentences = re.split(r'(?<=[.!?])\s+', abstract)
                     summary = " ".join(sentences[:2])
                     return ToolResult(
                         success=True,
-                        message=f"{summary}",
+                        message=summary,
                         data={"source": "duckduckgo", "abstract": abstract},
                     )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"DuckDuckGo search failed: {e}")
 
         return ToolResult(
-            success=True,
-            message=f"I have reviewed the information regarding {clean_q}, {config.address_as}. Let me know if you would like me to delve deeper.",
+            success=False,
+            message="",
             data={"query": clean_q},
         )
 

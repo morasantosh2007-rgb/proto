@@ -6,6 +6,28 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
+DEFAULT_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+
+def _load_env_file(path: Optional[Path] = None) -> None:
+    """Loads key-value pairs from .env into os.environ without requiring external packages."""
+    env_file = path or DEFAULT_ENV_PATH
+    if env_file.exists():
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip("'\"")
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+        except Exception:
+            pass
+
+
+_load_env_file()
 
 
 class JarvisConfig:
