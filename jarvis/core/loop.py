@@ -1,11 +1,13 @@
 """Main execution loop coordinating audio, brain, tools, safety, and TTS."""
 
 import asyncio
+from collections import deque
 import logging
 import sys
 import threading
 import time
 from typing import Optional
+import numpy as np
 
 from jarvis.config import config
 from jarvis.core.state import JarvisState, EventType, JarvisEvent
@@ -39,7 +41,7 @@ class JarvisLoop:
         self.router = ToolRouter(dry_run=self.dry_run)
 
         # Audio subsystems
-        self.vad = VoiceActivityDetector(energy_threshold=config.get("audio.energy_threshold", 300.0))
+        self.vad = VoiceActivityDetector(energy_threshold=config.get("audio.energy_threshold", 220.0))
         self.wake_detector = WakeWordDetector(
             wake_word=config.wake_word,
             sensitivity=config.get("system.sensitivity", 0.5),
@@ -78,7 +80,7 @@ class JarvisLoop:
         logger.info(f"JARVIS started (TextMode={self.text_mode}, DryRun={self.dry_run}).")
 
         # Initial startup greeting
-        greeting = f"All systems operational, {config.address_as}. Ready for your command."
+        greeting = f"All systems operational, {config.address_as}. Standing by."
         print(f"\n[JARVIS]: {greeting}\n")
         if not self.text_mode:
             self.tts.speak(greeting, dry_run=self.dry_run)
@@ -97,7 +99,7 @@ class JarvisLoop:
                 if not user_input:
                     continue
                 if user_input.lower() in ["exit", "quit", "shutdown", "q"]:
-                    print(f"[JARVIS]: Powering down. Have a pleasant day, {config.address_as}.")
+                    print(f"\n[JARVIS]: Powering down. Have a pleasant day, {config.address_as}.")
                     break
 
                 self.handle_user_utterance(user_input)
@@ -110,18 +112,39 @@ class JarvisLoop:
 
         self.stop()
 
+    def _calibrate_ambient_noise(self) -> None:
+        """Measures room noise floor on startup to automatically set VAD threshold."""
+        try:
+            samples = []
+            for _ in range(6):  # ~0.4s sample
+                chunk = self.mic.read_chunk(timeout=0.1)
+                if chunk:
+                    samples.append(chunk)
+            if samples:
+                combined = b"".join(samples)
+                audio_np = np.frombuffer(combined, dtype=np.int16)
+                ambient_rms = np.sqrt(np.mean(audio_np.astype(np.float64) ** 2))
+                # Set threshold comfortably above ambient noise
+                calibrated = max(180.0, float(ambient_rms * 2.8))
+                self.vad.energy_threshold = calibrated
+                logger.info(f"Calibrated noise floor: {ambient_rms:.1f} RMS -> Threshold: {calibrated:.1f}")
+        except Exception as e:
+            logger.debug(f"Ambient calibration bypassed: {e}")
+
     def _run_voice_loop(self) -> None:
-        """Continuous, real-time voice loop with VAD, wake word detection, and follow-up window."""
+        """Continuous, real-time voice loop with noise calibration, wake word gating, and follow-up window."""
         self.mic.start()
+        time.sleep(0.2)
+        self._calibrate_ambient_noise()
+
+        preroll_buffer: deque = deque(maxlen=4)
         audio_buffer = bytearray()
         silent_chunks = 0
         is_recording = False
-        min_speech_bytes = 3200  # At least ~100ms of audio
+        min_speech_bytes = 22400  # Minimum ~0.7s of audio to filter out clicks/breaths
 
-        mode_str = "Continuous Speech & 'Jarvis' Wake Word" if config.continuous_listening else "'Jarvis' Wake Word"
-        print(f"\n[JARVIS VOICE ENGINE ONLINE]")
-        print(f"Listening Mode: {mode_str}")
-        print(f"Speak into your microphone at any time...\n")
+        print(f"[JARVIS VOICE ENGINE ONLINE]")
+        print(f"Status: Waiting for wake word 'Jarvis' (e.g. 'Jarvis, tell me about today's news')...\n")
 
         try:
             while self._running:
@@ -131,7 +154,7 @@ class JarvisLoop:
 
                 curr_state = self.state_machine.current_state
 
-                # 1. If currently speaking, monitor for barge-in
+                # 1. While JARVIS is actively speaking, ignore mic input except for barge-in
                 if curr_state == JarvisState.SPEAKING:
                     self.barge_in.process_audio_chunk(chunk)
                     continue
@@ -142,56 +165,63 @@ class JarvisLoop:
                     if not is_recording:
                         is_recording = True
                         audio_buffer.clear()
+                        # Prepend preroll buffer so leading consonants ('Hey' / 'Jar-') are preserved
+                        for p_chunk in preroll_buffer:
+                            audio_buffer.extend(p_chunk)
                         silent_chunks = 0
-                        print("\r[🎤 Hearing speech...]", end="", flush=True)
+                        print("\r[🎤 Listening...]", end="", flush=True)
                     audio_buffer.extend(chunk)
                     silent_chunks = 0
                 elif is_recording:
                     audio_buffer.extend(chunk)
                     silent_chunks += 1
-                    # ~0.8s of silence after speech indicates user finished speaking
-                    if silent_chunks > 9:
+                    # Require 18 silent chunks (~1.2s pause) before concluding user is done speaking
+                    if silent_chunks > 18:
                         is_recording = False
                         recorded_data = bytes(audio_buffer)
                         audio_buffer.clear()
                         silent_chunks = 0
 
                         if len(recorded_data) >= min_speech_bytes:
-                            print("\r[⚡ Transcribing speech...]", end="", flush=True)
+                            print("\r[⚡ Transcribing...]", end="", flush=True)
                             transcription = self.stt.transcribe(recorded_data).strip()
+                            print(f"\r{' ' * 30}\r", end="", flush=True)
                             if transcription:
-                                print(f"\r{' ' * 30}\r", end="", flush=True)
                                 self._process_voice_transcription(transcription, curr_state)
-                            else:
-                                print(f"\r{' ' * 30}\r", end="", flush=True)
+                else:
+                    preroll_buffer.append(chunk)
+
         finally:
             self.mic.stop()
 
     def _process_voice_transcription(self, transcription: str, curr_state: JarvisState) -> None:
-        """Route transcribed voice utterance based on wake word, continuous mode, and state."""
+        """Route transcribed voice utterance based on wake word gating and conversational follow-up."""
         is_wake, command = self.wake_detector.check_text_for_wake_word(transcription)
 
-        should_process = False
-        clean_utterance = transcription
+        # In IDLE: Strictly require wake word
+        if curr_state == JarvisState.IDLE:
+            if not is_wake:
+                logger.debug(f"Ignored non-wake speech in IDLE: '{transcription}'")
+                return
 
-        # Case 1: Wake word explicitly detected
-        if is_wake:
-            should_process = True
-            clean_utterance = command if command else "hello"
-        # Case 2: In follow-up window or active listening state
+            # Wake word was said!
+            if not command or command.lower() in ["yes", "hello", "hi"]:
+                # User only said "Jarvis" or "Hey Jarvis"
+                self.state_machine.transition_to(JarvisState.LISTENING, "wake word detected")
+                reply = f"Yes, {config.address_as}?"
+                print(f"\n[JARVIS]: {reply}")
+                self.tts.speak(reply, dry_run=self.dry_run)
+                self.state_machine.on_speech_ended()
+            else:
+                # User said "Jarvis <command>" e.g. "Jarvis, tell me about today's news"
+                print(f"\n{config.user_name} (Voice) > {transcription}")
+                self.handle_user_utterance(command)
+
+        # In LISTENING or WAITING_CONFIRMATION: active conversation window (wake word not needed)
         elif curr_state in [JarvisState.LISTENING, JarvisState.WAITING_CONFIRMATION]:
-            should_process = True
-            clean_utterance = transcription
-        # Case 3: Continuous listening enabled
-        elif config.continuous_listening:
-            should_process = True
-            clean_utterance = transcription
-
-        if should_process:
-            print(f"\n{config.user_name} (Voice) > {transcription}")
-            self.handle_user_utterance(clean_utterance)
-        else:
-            logger.debug(f"Audio ignored (no wake word in IDLE): '{transcription}'")
+            clean_cmd = command if is_wake else transcription
+            print(f"\n{config.user_name} (Voice) > {clean_cmd}")
+            self.handle_user_utterance(clean_cmd)
 
     def handle_user_utterance(self, utterance: str) -> None:
         """Process transcribed speech or text input through safety and brain."""

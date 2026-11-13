@@ -1,17 +1,35 @@
-"""Speech-To-Text (STT) implementation using faster-whisper with graceful fallback."""
+"""Speech-To-Text (STT) implementation with anti-hallucination guards."""
 
 import io
+import logging
 import os
 import wave
-import logging
-from typing import Optional
+from typing import List, Optional
 import numpy as np
 
 logger = logging.getLogger("jarvis.audio.stt")
 
+# Common Whisper hallucinations when fed low-volume background noise
+HALLUCINATION_PHRASES = {
+    "are listening",
+    "i never do this this",
+    "thank you for watching",
+    "thanks for watching",
+    "subtitles by",
+    "subtitled by",
+    "please subscribe",
+    "subscribe to my channel",
+    "good",
+    "you",
+    "the end",
+    "bye",
+    "silence",
+    "amara.org",
+}
+
 
 class SpeechToText:
-    """Local, high-speed, zero-cost Speech-To-Text engine."""
+    """Local Speech-To-Text engine with whisper hallucination suppression."""
 
     def __init__(
         self,
@@ -51,8 +69,10 @@ class SpeechToText:
                 logger.error("No STT engine available. Install faster-whisper or SpeechRecognition.")
 
     def transcribe(self, audio_bytes: bytes) -> str:
-        """Transcribe PCM16 audio bytes to text."""
-        if not audio_bytes or len(audio_bytes) < 1000:
+        """Transcribe PCM16 audio bytes with noise and hallucination filtering."""
+        # Minimum audio length: at least ~0.7 seconds (22,400 bytes) to avoid noise clicks
+        min_bytes = int(self.sample_rate * 2 * 0.7)
+        if not audio_bytes or len(audio_bytes) < min_bytes:
             return ""
 
         self._ensure_engine()
@@ -61,14 +81,37 @@ class SpeechToText:
             try:
                 # Convert PCM16 bytes to float32 normalized array
                 audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
+                # Check audio RMS energy to ensure it's not pure silence
+                rms = np.sqrt(np.mean(audio_np ** 2))
+                if rms < 0.005:  # Very faint background noise
+                    return ""
+
                 segments, info = self._whisper_model.transcribe(
                     audio_np,
                     beam_size=5,
                     language="en",
+                    condition_on_previous_text=False,
                     vad_filter=True,
-                    vad_parameters=dict(min_silence_duration_ms=500),
+                    vad_parameters=dict(min_silence_duration_ms=400),
                 )
-                text = " ".join([seg.text for seg in segments]).strip()
+
+                valid_segments = []
+                for seg in segments:
+                    # Filter out segments flagged as non-speech
+                    if seg.no_speech_prob < 0.55 and seg.avg_logprob > -1.2:
+                        cleaned_seg = seg.text.strip()
+                        if cleaned_seg:
+                            valid_segments.append(cleaned_seg)
+
+                text = " ".join(valid_segments).strip()
+
+                # Clean hallucination check
+                check_lower = text.lower().strip(" .!?,;")
+                if check_lower in HALLUCINATION_PHRASES:
+                    logger.debug(f"Suppressed Whisper hallucination: '{text}'")
+                    return ""
+
                 return text
             except Exception as e:
                 logger.error(f"Whisper transcription failed: {e}")
@@ -77,7 +120,6 @@ class SpeechToText:
         if self._sr_recognizer:
             try:
                 import speech_recognition as sr
-                # Wrap PCM bytes in a WAV container in memory
                 wav_io = io.BytesIO()
                 with wave.open(wav_io, "wb") as wav_file:
                     wav_file.setnchannels(1)
@@ -91,6 +133,6 @@ class SpeechToText:
                     text = self._sr_recognizer.recognize_google(audio_data)
                     return text.strip()
             except Exception as e:
-                logger.error(f"Fallback recognizer error: {e}")
+                logger.debug(f"SpeechRecognition fallback error: {e}")
 
         return ""
