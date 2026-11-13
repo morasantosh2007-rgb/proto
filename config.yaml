@@ -1,0 +1,114 @@
+# JARVIS Configuration File
+user:
+  name: "Santosh"
+  address_as: "sir"
+  timezone: "Asia/Kolkata"
+
+system:
+  wake_word: "jarvis"
+  sensitivity: 0.5
+  follow_up_window_seconds: 8.0
+  barge_in: true
+
+audio:
+  # Speech-to-Text
+  stt_engine: "faster-whisper" # "faster-whisper" or "speech_recognition"
+  whisper_model: "base.en"
+  whisper_device: "cpu"        # "cpu" or "cuda"
+  whisper_compute_type: "int8"
+  sample_rate: 16000
+  vad_silence_threshold_ms: 1200
+  energy_threshold: 300
+
+  # Text-to-Speech (Free, high-fidelity neural streaming)
+  tts_engine: "edge-tts"       # "edge-tts", "piper", "sapi", "gtts"
+  tts_voice: "en-GB-RyanNeural" # British refined Jarvis tone; alternatives: "en-US-GuyNeural", "en-GB-ThomasNeural"
+  tts_rate: "+0%"
+  tts_pitch: "+0Hz"
+  tts_volume: "+0%"
+
+brain:
+  default_provider: "hybrid"   # "hybrid", "ollama", "gemini", "groq", "claude"
+  fallback_to_local: true
+  ollama_url: "http://localhost:11434"
+  ollama_model: "llama3.2"
+  gemini_model: "gemini-2.5-flash"
+  daily_spend_limit_usd: 0.00
+  stream_responses: true
+
+safety:
+  enforce_tiers: true
+  tier2_require_voice_confirm: true
+  tier3_passphrase: "jarvis authorize"
+  audit_db_path: "jarvis_audit.db"
+  prompt_injection_guard: true
+  blocklist_paths:
+    - ".ssh"
+    - ".aws"
+    - "AppData/Local/Microsoft/Vault"
+    - "AppData/Roaming/KeePass"
+    - "Windows/System32"
+    - "id_rsa"
+    - "id_ed25519"
+  blocklist_commands:
+    - "format"
+    - "regedit"
+    - "vssadmin"
+    - "bcdedit"
+    - "cipher /w"
+
+laptop:
+  os: "windows"
+  default_browser: "chrome"
+  fuzzy_threshold: 70
+  search_roots:
+    - "Desktop"
+    - "Documents"
+    - "Downloads"
+
+news:
+  topics:
+    - "technology"
+    - "artificial intelligence"
+    - "science"
+    - "world"
+  sources:
+    - name: "Hacker News"
+      url: "https://news.ycombinator.com/rss"
+    - name: "Ars Technica"
+      url: "https://feeds.arstechnica.com/arstechnica/index"
+    - name: "TechCrunch"
+      url: "https://techcrunch.com/feed/"
+    - name: "BBC Technology"
+      url: "http://feeds.bbci.co.uk/news/technology/rss.xml"
+  max_articles_per_topic: 3
+
+weather:
+  default_city: "London"
+  units: "metric"
+  use_geolocation: true
+
+routines:
+  "work mode":
+    description: "Launch developer workspace and configure media"
+    actions:
+      - tool: "laptop.set_volume"
+        params: { level: 25 }
+      - tool: "laptop.open_app"
+        params: { app_name: "code" }
+      - tool: "laptop.open_site"
+        params: { url: "https://github.com" }
+
+  "focus mode":
+    description: "Silence alerts and reduce audio"
+    actions:
+      - tool: "laptop.set_volume"
+        params: { level: 15 }
+
+  "wrap up":
+    description: "Close work tools and lock workstation"
+    actions:
+      - tool: "laptop.set_volume"
+        params: { level: 30 }
+      - tool: "laptop.lock_screen"
+        params: {}

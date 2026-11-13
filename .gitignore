@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environments
+venv/
+env/
+ENV/
+
+# Database and secrets
+*.db
+*.sqlite3
+.env
+
+# Testing & Caches
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+
+# OS specific
+Thumbs.db
+Desktop.ini
+.DS_Store
